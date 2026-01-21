@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Motherload Clone</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #222; font-family: 'Courier New', Courier, monospace; }
+        canvas { display: block; }
+        
+        /* UI Overlays */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: #444;
+            color: white;
+            padding: 20px;
+            border: 4px solid #888;
+            border-radius: 8px;
+            text-align: center;
+            z-index: 10;
+            min-width: 320px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        .modal h2 { margin-top: 0; color: #fb1; }
+        .btn {
+            background: #666;
+            border: 2px solid #999;
+            color: white;
+            padding: 10px 20px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 14px;
+            width: 100%;
+            max-width: 300px;
+        }
+        .btn:hover { background: #888; }
+        .btn:disabled { background: #333; color: #555; cursor: not-allowed; }
+        .close-btn { background: #a33; margin-top: 15px; }
+        .close-btn:hover { background: #c44; }
+        
+        #inventory-display {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-size: 14px;
+            color: #ccc;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- UI: Fuel Shop -->
+    <div id="fuelModal" class="modal">
+        <h2>FUEL CENTER</h2>
+        <div class="stat-row">
+            <span>Fuel:</span> <span id="fuel-val">0</span>
+        </div>
+        <div class="stat-row">
+            <span>Cash:</span> $<span id="fuel-cash-val">0</span>
+        </div>
+        <button class="btn" onclick="game.buyFuel()">Buy 20 Fuel ($10)</button>
+        <button class="btn close-btn" onclick="game.closeModals()">Close</button>
+    </div>
+
+    <!-- UI: Upgrade Shop -->
+    <div id="upgradeModal" class="modal">
+        <h2>WORKSHOP</h2>
+        <p style="font-size:12px; color:#aaa;">Upgrade your machine.</p>
+        <div class="stat-row"><span>Cash:</span> $<span id="upg-cash">0</span></div>
+        <hr style="border-color: #666; margin: 10px 0;">
+        
+        <!-- Fuel Upgrade -->
+        <button class="btn" onclick="game.buyFuelUpgrade()">
+            Tank Upgrade (+20)<br>
+            Current: <span id="upg-fuel-curr">100</span> | Cost: $<span id="upg-fuel-cost">100</span>
+        </button>
+
+        <!-- Cargo Upgrade -->
+        <button class="btn" onclick="game.buyCargoUpgrade()">
+            Cargo Hold (+1 Slot)<br>
+            Current: <span id="upg-cargo-curr">4</span> | Cost: $<span id="upg-cargo-cost">200</span>
+        </button>
+
+        <!-- Drill Upgrade -->
+        <button class="btn" onclick="game.buyDrillUpgrade()">
+            Diamond Drill (-0.1s)<br>
+            Current: <span id="upg-drill-curr">0.5</span>s | Cost: $<span id="upg-drill-cost">200</span>
+        </button>
+        
+        <button class="btn close-btn" onclick="game.closeModals()">Close</button>
+    </div>
+
+    <!-- UI: Ore Selling -->
+    <div id="sellModal" class="modal">
+        <h2>ORE REFINERY</h2>
+        <p>Current Cash: $<span id="sell-cash-val">0</span></p>
+        <div id="sell-list"></div>
+        <button class="btn close-btn" onclick="game.closeModals()">Close</button>
+    </div>
+
+    <!-- UI: Inventory -->
+    <div id="invModal" class="modal">
+        <h2>INVENTORY</h2>
+        <div id="inventory-display"></div>
+        <p style="color: #aaa; font-size: 12px;">Capacity: <span id="inv-cap">0</span> / <span id="inv-max">0</span></p>
+        <button class="btn close-btn" onclick="game.closeModals()">Close</button>
+    </div>
+
+<script>
+/**
+ * ==========================================
+ *        VS CODE CONFIGURATION AREA
+ * ==========================================
+ */
+const CONFIG = {
+    // --- MAP SETTINGS ---
+    TILE_SIZE: 40,            
+    MAP_WIDTH: 150,            
+    CHUNK_BUFFER: 20,         
+
+    // --- PLAYER PHYSICS ---
+    PLAYER_SIZE: 30,          
+    GRAVITY: 0.1,             
+    MAX_FALL_SPEED: 6,       
+    
+    // Horizontal Movement
+    ACCEL_RATE: 0.1,          
+    FRICTION: 0.1,            
+    MAX_RUN_SPEED: 4,         
+    
+    // Flying
+    FLY_ACCEL: 0.2,           
+    MAX_FLY_SPEED: 4,         
+
+    // --- MINING SETTINGS ---
+    BASE_MINE_TIME_MS: 1500,   // Starting drill speed
+    MIN_MINE_TIME_MS: 100,    // Fastest possible drill (0.1s)
+    FUEL_CONSUMPTION_RATE: 0.01, 
+    STARTING_FUEL: 100,
+    STARTING_MAX_ITEMS: 4,    // Start with 4 slots
+
+    // --- ORE GENERATION ---
+    ORE_IRON:    { price: 10,   sweetSpot: 50,  decay: 0.02,  color: '#6a4e42', label: 'Iron' },
+    ORE_SILVER:  { price: 50,   sweetSpot: 100, decay: 0.015, color: '#aaaaaa', label: 'Silver' },
+    ORE_GOLD:    { price: 100,  sweetSpot: 200, decay: 0.01,  color: '#ffd700', label: 'Gold' },
+    ORE_EMERALD: { price: 500,  sweetSpot: 500, decay: 0.005, color: '#50c878', label: 'Emerald' },
+    ORE_RUBY:    { price: 1000, sweetSpot: 800, decay: 0.003, color: '#e0115f', label: 'Ruby' }
+};
+
+/**
+ * ==========================================
+ *            GAME LOGIC
+ * ==========================================
+ */
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const game = {
+    width: 0,
+    height: 0,
+    camera: { x: 0, y: 0 },
+    keys: {},
+    tiles: [], 
+    paused: false,
+    gameOver: false,
+    
+    player: {
+        x: 0, y: 0,
+        vx: 0, vy: 0,
+        width: CONFIG.PLAYER_SIZE,
+        height: CONFIG.PLAYER_SIZE,
+        
+        // Stats
+        fuel: CONFIG.STARTING_FUEL,
+        maxFuel: 100,
+        money: 0,
+        inventory: { iron: 0, silver: 0, gold: 0, emerald: 0, ruby: 0 },
+        maxItems: CONFIG.STARTING_MAX_ITEMS,
+        miningTime: CONFIG.BASE_MINE_TIME_MS,
+
+        // Upgrade Costs
+        fuelUpgradeCost: 100,
+        drillUpgradeCost: 200,
+        cargoUpgradeCost: 200,
+
+        // Mining State
+        isMining: false,
+        mineTimer: 0,
+        miningTarget: null, 
+        miningDirection: null
+    },
+
+    init() {
+        this.resize();
+        window.addEventListener('resize', () => this.resize());
+        window.addEventListener('keydown', e => {
+            this.keys[e.code] = true;
+            if (e.code === 'KeyI') this.toggleInventory();
+        });
+        window.addEventListener('keyup', e => this.keys[e.code] = false);
+
+        // Initial Player Pos
+        this.player.x = (CONFIG.MAP_WIDTH * CONFIG.TILE_SIZE) / 2;
+        this.player.y = -100;
+
+        // Generate Surface
+        this.generateMapRows(0, 20);
+        this.loop();
+    },
+
+    resize() {
+        this.width = canvas.width = window.innerWidth;
+        this.height = canvas.height = window.innerHeight;
+    },
+
+    getTotalItems() {
+        const i = this.player.inventory;
+        return i.iron + i.silver + i.gold + i.emerald + i.ruby;
+    },
+
+    generateMapRows(startRow, count) {
+        for (let y = startRow; y < startRow + count; y++) {
+            const row = [];
+            for (let x = 0; x < CONFIG.MAP_WIDTH; x++) {
+                if (y < 0) {
+                    row.push({ type: 'air' }); 
+                } else if (y === 0) {
+                    row.push({ type: 'air' }); 
+                } else {
+                    let type = 'dirt';
+                    const rand = Math.random();
+                    const getProb = (ore) => {
+                        const dist = Math.abs(y - ore.sweetSpot);
+                        return Math.exp(-Math.pow(dist * ore.decay, 2)); 
+                    };
+
+                    // Check rarest first
+                    if (rand < 0.02 * getProb(CONFIG.ORE_RUBY)) type = 'ruby';
+                    else if (rand < 0.03 * getProb(CONFIG.ORE_EMERALD)) type = 'emerald';
+                    else if (rand < 0.05 * getProb(CONFIG.ORE_GOLD)) type = 'gold';
+                    else if (rand < 0.08 * getProb(CONFIG.ORE_SILVER)) type = 'silver';
+                    else if (rand < 0.15 * getProb(CONFIG.ORE_IRON)) type = 'iron';
+
+                    row.push({ type: type, x: x, y: y });
+                }
+            }
+            this.tiles[y] = row;
+        }
+    },
+
+    loop() {
+        if (!this.paused) {
+            this.update();
+            this.render();
+        }
+        requestAnimationFrame(() => this.loop());
+    },
+
+    update() {
+        if (this.gameOver) return;
+        const p = this.player;
+
+        // Fuel
+        p.fuel -= CONFIG.FUEL_CONSUMPTION_RATE;
+        if (p.fuel <= 0) p.fuel = 0;
+
+        // Map Expansion
+        const playerRow = Math.floor(p.y / CONFIG.TILE_SIZE);
+        if (playerRow + CONFIG.CHUNK_BUFFER > this.tiles.length) {
+            this.generateMapRows(this.tiles.length, 20);
+        }
+
+        // --- MINING STATE ---
+        if (p.isMining) {
+            p.mineTimer += 16.6; 
+            const progress = p.mineTimer / p.miningTime;
+            
+            // Visual Clipping
+            const tx = p.miningTarget.x;
+            const ty = p.miningTarget.y;
+
+            if (p.miningDirection === 'down') {
+                p.y = (ty * CONFIG.TILE_SIZE) - p.height + (progress * 15);
+            } else if (p.miningDirection === 'right') {
+                p.x = (tx * CONFIG.TILE_SIZE) - p.width + (progress * 15);
+            } else if (p.miningDirection === 'left') {
+                p.x = ((tx + 1) * CONFIG.TILE_SIZE) - (progress * 15);
+            }
+
+            if (p.mineTimer >= p.miningTime) {
+                // Success
+                const tile = this.tiles[ty][tx];
+                if (tile.type !== 'dirt') p.inventory[tile.type]++;
+                this.tiles[ty][tx] = { type: 'air' };
+                
+                // Snap Back
+                p.isMining = false;
+                if (p.miningDirection === 'down') {
+                    p.y = (ty * CONFIG.TILE_SIZE) - p.height;
+                } else if (p.miningDirection === 'right') {
+                    p.x = (tx * CONFIG.TILE_SIZE) - p.width;
+                } else if (p.miningDirection === 'left') {
+                    p.x = (tx + 1) * CONFIG.TILE_SIZE;
+                }
+                
+                p.vx = 0; 
+                p.vy = 0;
+            }
+            return; 
+        }
+
+        // --- PHYSICS ---
+        if (this.keys['ArrowRight']) p.vx += CONFIG.ACCEL_RATE;
+        else if (this.keys['ArrowLeft']) p.vx -= CONFIG.ACCEL_RATE;
+        else {
+            if (p.vx > 0) p.vx = Math.max(0, p.vx - CONFIG.FRICTION);
+            if (p.vx < 0) p.vx = Math.min(0, p.vx + CONFIG.FRICTION);
+        }
+
+        if (this.keys['ArrowUp'] && p.fuel > 0) p.vy -= CONFIG.FLY_ACCEL;
+        else p.vy += CONFIG.GRAVITY;
+
+        // Speed caps
+        if (p.vx > CONFIG.MAX_RUN_SPEED) p.vx = CONFIG.MAX_RUN_SPEED;
+        if (p.vx < -CONFIG.MAX_RUN_SPEED) p.vx = -CONFIG.MAX_RUN_SPEED;
+        if (p.vy > CONFIG.MAX_FALL_SPEED) p.vy = CONFIG.MAX_FALL_SPEED;
+        if (p.vy < -CONFIG.MAX_FLY_SPEED) p.vy = -CONFIG.MAX_FLY_SPEED;
+
+        p.x += p.vx;
+        this.handleCollisions('x');
+        p.y += p.vy;
+        this.handleCollisions('y');
+
+        // Boundaries
+        if (p.x < 0) { p.x = 0; p.vx = 0; }
+        if (p.x > CONFIG.MAP_WIDTH * CONFIG.TILE_SIZE - p.width) {
+            p.x = CONFIG.MAP_WIDTH * CONFIG.TILE_SIZE - p.width;
+            p.vx = 0;
+        }
+
+        this.checkInteractions();
+    },
+
+    handleCollisions(axis) {
+        const p = this.player;
+        const corners = [
+            { x: p.x, y: p.y },
+            { x: p.x + p.width, y: p.y },
+            { x: p.x, y: p.y + p.height },
+            { x: p.x + p.width, y: p.y + p.height }
+        ];
+
+        let grounded = false;
+        let blockedRight = false;
+        let blockedLeft = false;
+
+        for (let corner of corners) {
+            const tx = Math.floor(corner.x / CONFIG.TILE_SIZE);
+            const ty = Math.floor(corner.y / CONFIG.TILE_SIZE);
+            if (ty < 0 || ty >= this.tiles.length || tx < 0 || tx >= CONFIG.MAP_WIDTH) continue;
+            
+            const tile = this.tiles[ty][tx];
+            if (tile && tile.type !== 'air') {
+                if (axis === 'x') {
+                    if (p.vx > 0) { blockedRight = true; p.x = (tx * CONFIG.TILE_SIZE) - p.width - 0.1; }
+                    else if (p.vx < 0) { blockedLeft = true; p.x = ((tx + 1) * CONFIG.TILE_SIZE) + 0.1; }
+                    p.vx = 0;
+                } else {
+                    if (p.vy > 0) { grounded = true; p.y = (ty * CONFIG.TILE_SIZE) - p.height - 0.1; }
+                    else if (p.vy < 0) p.y = ((ty + 1) * CONFIG.TILE_SIZE) + 0.1;
+                    p.vy = 0;
+                }
+            }
+        }
+
+        // --- MINING TRIGGERS ---
+        // Can only mine if stable and has inventory space
+        const stable = grounded || Math.abs(p.vy) < 1;
+        
+        if (stable) {
+            if (axis === 'y' && this.keys['ArrowDown']) {
+                this.tryStartMining(p.x + p.width/2, p.y + p.height + 2, 'down');
+            }
+            if (axis === 'x' && this.keys['ArrowRight'] && blockedRight) {
+                this.tryStartMining(p.x + p.width + 2, p.y + p.height/2, 'right');
+            }
+            if (axis === 'x' && this.keys['ArrowLeft'] && blockedLeft) {
+                this.tryStartMining(p.x - 2, p.y + p.height/2, 'left');
+            }
+        }
+    },
+
+    tryStartMining(checkX, checkY, dir) {
+        // Check Full Inventory
+        if (this.getTotalItems() >= this.player.maxItems) return;
+
+        const tx = Math.floor(checkX / CONFIG.TILE_SIZE);
+        const ty = Math.floor(checkY / CONFIG.TILE_SIZE);
+
+        if (ty >= 0 && ty < this.tiles.length && tx >= 0 && tx < CONFIG.MAP_WIDTH) {
+            if (this.tiles[ty][tx].type !== 'air') {
+                this.player.isMining = true;
+                this.player.mineTimer = 0;
+                this.player.miningTarget = { x: tx, y: ty };
+                this.player.miningDirection = dir;
+                this.player.vx = 0;
+                this.player.vy = 0;
+            }
+        }
+    },
+
+    checkInteractions() {
+        const p = this.player;
+        if (p.y < 0) { 
+            // Fuel (Left)
+            const fuelZoneEnd = 4 * CONFIG.TILE_SIZE;
+            if (p.x < fuelZoneEnd && this.keys['Space']) this.openFuelShop();
+
+            // Sell (Right)
+            const sellZoneStart = (CONFIG.MAP_WIDTH - 4) * CONFIG.TILE_SIZE;
+            if (p.x > sellZoneStart && this.keys['Space']) this.openSellShop();
+
+            // Upgrade (Center)
+            const mapPixelWidth = CONFIG.MAP_WIDTH * CONFIG.TILE_SIZE;
+            const center = mapPixelWidth / 2;
+            if (p.x > center - 80 && p.x < center + 80 && this.keys['Space']) this.openUpgradeShop();
+        }
+    },
+
+    render() {
+        ctx.fillStyle = '#87CEEB'; 
+        ctx.fillRect(0, 0, this.width, this.height);
+
+        const camX = this.width / 2 - this.player.x - this.player.width/2;
+        const camY = this.height / 2 - this.player.y - this.player.height/2;
+        
+        ctx.save();
+        ctx.translate(camX, camY);
+
+        // Buildings
+        const mapPixelWidth = CONFIG.MAP_WIDTH * CONFIG.TILE_SIZE;
+        const center = mapPixelWidth / 2;
+
+        ctx.fillStyle = '#555';
+        ctx.fillRect(0, -120, 160, 120); // Fuel
+        ctx.fillRect(center - 80, -120, 160, 120); // Upgrade
+        ctx.fillRect(mapPixelWidth - 160, -120, 160, 120); // Sell
+
+        ctx.fillStyle = '#FFF'; ctx.font = '20px Arial'; ctx.fillText("FUEL", 50, -60);
+        ctx.fillStyle = '#0F0'; ctx.fillText("UPGRADE", center - 45, -60);
+        ctx.fillStyle = '#FFD700'; ctx.fillText("SELL", mapPixelWidth - 110, -60);
+
+        // Walls
+        ctx.fillStyle = '#333';
+        ctx.fillRect(-1000, 0, 1000, (this.tiles.length * CONFIG.TILE_SIZE) + 1000);
+        ctx.fillRect(mapPixelWidth, 0, 1000, (this.tiles.length * CONFIG.TILE_SIZE) + 1000);
+
+        // Tiles
+        const startCol = Math.floor(-camX / CONFIG.TILE_SIZE);
+        const endCol = startCol + (this.width / CONFIG.TILE_SIZE) + 1;
+        const startRow = Math.floor(-camY / CONFIG.TILE_SIZE);
+        const endRow = startRow + (this.height / CONFIG.TILE_SIZE) + 1;
+
+        for (let y = Math.max(0, startRow); y < Math.min(this.tiles.length, endRow); y++) {
+            for (let x = Math.max(0, startCol); x < Math.min(CONFIG.MAP_WIDTH, endCol); x++) {
+                const tile = this.tiles[y][x];
+                if (tile.type !== 'air') {
+                    ctx.fillStyle = '#8B4513';
+                    ctx.fillRect(x * CONFIG.TILE_SIZE, y * CONFIG.TILE_SIZE, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+                    ctx.strokeStyle = '#654321';
+                    ctx.strokeRect(x * CONFIG.TILE_SIZE, y * CONFIG.TILE_SIZE, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+
+                    if (tile.type !== 'dirt') {
+                        let color = CONFIG.ORE_IRON.color;
+                        if(tile.type === 'silver') color = CONFIG.ORE_SILVER.color;
+                        if(tile.type === 'gold') color = CONFIG.ORE_GOLD.color;
+                        if(tile.type === 'emerald') color = CONFIG.ORE_EMERALD.color;
+                        if(tile.type === 'ruby') color = CONFIG.ORE_RUBY.color;
+                        
+                        ctx.fillStyle = color;
+                        ctx.fillRect((x*CONFIG.TILE_SIZE)+10, (y*CONFIG.TILE_SIZE)+10, 10, 10);
+                        ctx.fillRect((x*CONFIG.TILE_SIZE)+25, (y*CONFIG.TILE_SIZE)+25, 8, 8);
+                        ctx.fillRect((x*CONFIG.TILE_SIZE)+5, (y*CONFIG.TILE_SIZE)+25, 6, 6);
+                    }
+                }
+            }
+        }
+
+        // Player
+        ctx.fillStyle = 'blue';
+        ctx.fillRect(this.player.x, this.player.y, this.player.width, this.player.height);
+        
+        ctx.fillStyle = 'white';
+        if (this.player.isMining) {
+             if (this.player.miningDirection === 'right') ctx.fillRect(this.player.x + 20, this.player.y + 5, 5, 5);
+             else if (this.player.miningDirection === 'left') ctx.fillRect(this.player.x + 5, this.player.y + 5, 5, 5);
+             else ctx.fillRect(this.player.x + 12, this.player.y + 20, 5, 5); 
+        } else {
+            if (this.player.vx >= 0) ctx.fillRect(this.player.x + 20, this.player.y + 5, 5, 5);
+            else ctx.fillRect(this.player.x + 5, this.player.y + 5, 5, 5);
+        }
+
+        ctx.restore();
+
+        // --- HUD ---
+        ctx.fillStyle = '#8B4513';
+        ctx.fillRect(20, 20, 220, 100);
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(20, 20, 220, 100);
+        
+        ctx.fillStyle = 'white';
+        ctx.font = '16px Courier New';
+        ctx.fillText(`FUEL: ${Math.floor(this.player.fuel)} / ${this.player.maxFuel}`, 30, 45);
+        ctx.fillText(`CASH: $${this.player.money}`, 30, 65);
+        
+        // Depth Meter
+        const depth = Math.max(0, Math.floor(this.player.y / CONFIG.TILE_SIZE));
+        ctx.fillText(`DEPTH: ${depth}m`, 30, 85);
+        
+        // Items
+        const count = this.getTotalItems();
+        ctx.fillStyle = count >= this.player.maxItems ? '#ff6666' : 'white';
+        ctx.fillText(`ITEMS: ${count} / ${this.player.maxItems}`, 30, 105);
+
+        ctx.fillStyle = '#ccc';
+        ctx.font = '12px Courier New';
+        ctx.fillText("Press 'I' for Inventory", 20, 135);
+
+        if (this.player.fuel <= 0) {
+            ctx.fillStyle = 'red';
+            ctx.font = '30px Arial';
+            ctx.fillText("OUT OF FUEL!", this.width/2 - 100, this.height/2);
+        }
+    },
+
+    // --- UI FUNCTIONS ---
+    toggleInventory() {
+        if (document.getElementById('invModal').style.display === 'block') {
+            this.closeModals();
+        } else {
+            this.paused = true;
+            this.keys = {};
+            const inv = this.player.inventory;
+            const div = document.getElementById('inventory-display');
+            div.innerHTML = `
+                <div>Iron Ore:</div><div>${inv.iron}</div>
+                <div>Silver Ore:</div><div>${inv.silver}</div>
+                <div>Gold Ore:</div><div>${inv.gold}</div>
+                <div style="color:${CONFIG.ORE_EMERALD.color}">Emerald:</div><div>${inv.emerald}</div>
+                <div style="color:${CONFIG.ORE_RUBY.color}">Ruby:</div><div>${inv.ruby}</div>
+            `;
+            document.getElementById('inv-cap').innerText = this.getTotalItems();
+            document.getElementById('inv-max').innerText = this.player.maxItems;
+            document.getElementById('invModal').style.display = 'block';
+        }
+    },
+
+    openFuelShop() {
+        this.paused = true; this.keys = {}; 
+        document.getElementById('fuel-val').innerText = Math.floor(this.player.fuel);
+        document.getElementById('fuel-cash-val').innerText = this.player.money;
+        document.getElementById('fuelModal').style.display = 'block';
+    },
+
+    buyFuel() {
+        if (this.player.money >= 10) {
+            this.player.money -= 10;
+            this.player.fuel = Math.min(this.player.maxFuel, this.player.fuel + 20);
+            this.updateUIValues();
+        } else { alert("Not enough money!"); }
+    },
+
+    openUpgradeShop() {
+        this.paused = true; this.keys = {};
+        this.updateUIValues();
+        document.getElementById('upgradeModal').style.display = 'block';
+    },
+
+    buyFuelUpgrade() {
+        if (this.player.money >= this.player.fuelUpgradeCost) {
+            this.player.money -= this.player.fuelUpgradeCost;
+            this.player.maxFuel += 20;
+            this.player.fuel = this.player.maxFuel; 
+            this.player.fuelUpgradeCost *= 2; 
+            this.updateUIValues();
+        } else { alert("Not enough money!"); }
+    },
+
+    buyCargoUpgrade() {
+        if (this.player.money >= this.player.cargoUpgradeCost) {
+            this.player.money -= this.player.cargoUpgradeCost;
+            this.player.maxItems += 1;
+            this.player.cargoUpgradeCost *= 2;
+            this.updateUIValues();
+        } else { alert("Not enough money!"); }
+    },
+
+    buyDrillUpgrade() {
+        if (this.player.money >= this.player.drillUpgradeCost) {
+            // Check Cap
+            if (this.player.miningTime <= CONFIG.MIN_MINE_TIME_MS) {
+                alert("Drill is already at maximum speed!");
+                return;
+            }
+            this.player.money -= this.player.drillUpgradeCost;
+            this.player.miningTime = Math.max(CONFIG.MIN_MINE_TIME_MS, this.player.miningTime - 100);
+            this.player.drillUpgradeCost *= 2;
+            this.updateUIValues();
+        } else { alert("Not enough money!"); }
+    },
+
+    openSellShop() {
+        this.paused = true; this.keys = {};
+        document.getElementById('sell-cash-val').innerText = this.player.money;
+        
+        const list = document.getElementById('sell-list');
+        list.innerHTML = '';
+
+        const createSellBtn = (type, conf) => {
+            const count = this.player.inventory[type];
+            const btn = document.createElement('button');
+            btn.className = 'btn';
+            btn.innerText = `Sell ${conf.label} (${count}) - $${conf.price}`;
+            btn.onclick = () => {
+                if (this.player.inventory[type] > 0) {
+                    this.player.inventory[type]--;
+                    this.player.money += conf.price;
+                    document.getElementById('sell-cash-val').innerText = this.player.money;
+                    btn.innerText = `Sell ${conf.label} (${this.player.inventory[type]}) - $${conf.price}`;
+                    this.updateUIValues();
+                }
+            };
+            list.appendChild(btn);
+            list.appendChild(document.createElement('br'));
+        };
+
+        createSellBtn('iron', CONFIG.ORE_IRON);
+        createSellBtn('silver', CONFIG.ORE_SILVER);
+        createSellBtn('gold', CONFIG.ORE_GOLD);
+        createSellBtn('emerald', CONFIG.ORE_EMERALD);
+        createSellBtn('ruby', CONFIG.ORE_RUBY);
+
+        document.getElementById('sellModal').style.display = 'block';
+    },
+
+    updateUIValues() {
+        document.getElementById('fuel-val').innerText = Math.floor(this.player.fuel);
+        document.getElementById('fuel-cash-val').innerText = this.player.money;
+        document.getElementById('sell-cash-val').innerText = this.player.money;
+        
+        document.getElementById('upg-cash').innerText = this.player.money;
+        
+        document.getElementById('upg-fuel-curr').innerText = this.player.maxFuel;
+        document.getElementById('upg-fuel-cost').innerText = this.player.fuelUpgradeCost;
+
+        document.getElementById('upg-cargo-curr').innerText = this.player.maxItems;
+        document.getElementById('upg-cargo-cost').innerText = this.player.cargoUpgradeCost;
+
+        document.getElementById('upg-drill-curr').innerText = (this.player.miningTime / 1000).toFixed(1);
+        document.getElementById('upg-drill-cost').innerText = this.player.drillUpgradeCost;
+    },
+
+    closeModals() {
+        document.querySelectorAll('.modal').forEach(m => m.style.display = 'none');
+        this.paused = false;
+    }
+};
+
+game.init();
+
+</script>
+</body>
+</html>
